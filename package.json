@@ -1,0 +1,34 @@
+{
+  "name": "es-vite-plugin",
+  "version": "0.0.6",
+  "description": "Script content transform for EaseScript",
+  "main": "index.js",
+  "scripts": {
+    
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+git@github.com:51breeze/es-vite-plugin.git"
+  },
+  "keywords": [
+    "es",
+    "ease",
+    "script",
+    "EaseScript",
+    "es-vite",
+    "es-vite-plugin"
+  ],
+  "author": "Jun Ye",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/51breeze/es-vite-plugin/issues"
+  },
+  "homepage": "https://github.com/51breeze/es-vite-plugin#readme",
+  "dependencies": {
+    "@vitejs/plugin-vue": "^4.3.4",
+    "rollup-pluginutils": "^2.8.2"
+  },
+  "devDependencies": {
+    
+  }
+}
