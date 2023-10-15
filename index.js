@@ -28,6 +28,9 @@ function normalizePath(compilation, query={}){
 function parseResource(id) {
     const [resourcePath, rawQuery] = id.split(`?`, 2);
     const query = Object.fromEntries(new URLSearchParams(rawQuery));
+    if (query.vue != null) {
+        query.vue = true;
+    }
     return {
         resourcePath,
         resource:id,
@@ -207,8 +210,63 @@ function EsPlugin(options={}){
             }
             return null;
         },
+
+        getCode(resourcePath, query={}){
+            const compilation = compiler.createCompilation(resourcePath);
+            if( compilation ){
+                const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
+                let content = builder.getGeneratedCodeByFile(resourceFile);
+                if( content ){
+                    return {
+                        code: content,
+                        map: null
+                    };
+                }else{
+                    return new Promise( (resolve,reject)=>{
+                        const code = readFileSync(resourcePath, "utf-8");
+                        if( !compilation.isValid(code) ){
+                            compilation.clear();
+                            compilation.parser(code);
+                            cache.set(compilation, code)
+                        }
+                        compilation.build(builder, (error,compilation)=>{
+                            const errors = errorHandle(this, compilation);
+                            if( error ){
+                                errors.push( error.toString() );
+                            }
+                            if( errors && errors.length > 0 ){
+                                reject( new Error( errors.join("\r\n") ) );
+                            }else{
+                                const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
+                                let content = builder.getGeneratedCodeByFile(resourceFile);
+                                if( content ){
+                                    resolve({
+                                        code:content, 
+                                        map:builder.getGeneratedSourceMapByFile(resourceFile)||null
+                                    })
+                                }
+                            }
+                        })
+                    })
+                }
+            }
+            return null;
+        },
+
         load( id, opt ){
-            if(!isVueTemplate)return null;
+            if(!isVueTemplate){
+                if( filter(id) ){
+                    const {resourcePath, query} = parseResource(id);
+                    if(query.type==='style'){
+                        return this.getCode(resourcePath, query)
+                    }
+                }
+                return null;
+            }
+            const {resourcePath, query} = parseResource(id);
+            if (query.vue && query.src) {
+                return this.getCode(resourcePath, query);
+            }
             return inheritPlugin.load.call(this, id, opt);
         },
 
@@ -252,6 +310,12 @@ function EsPlugin(options={}){
         transform(code, id, opts={}){
             if ( !filter(id) ) return;
             const {resourcePath,resource,query} = parseResource(id);
+            if(query.type==='style'){
+                if( isVueTemplate && query.vue){
+                   return inheritPlugin.transform.call(this, code, id, opts);
+                }
+                return;
+            }
             return new Promise( (resolve,reject)=>{
                 const compilation = compiler.createCompilation(resourcePath);
                 if( compilation ){
@@ -273,7 +337,7 @@ function EsPlugin(options={}){
                         excludes.add(compilation);
                     }
 
-                    if( !compilation.isValid(code) ){
+                    if( !(isVueTemplate && query.vue) && !compilation.isValid(code) ){
                         compilation.clear();
                         compilation.parser(code);
                         cache.set(compilation, code)
@@ -293,10 +357,10 @@ function EsPlugin(options={}){
                                 return resolve({code:code, map:null});
                             }
 
-                            const resourceFile = normalizePath(compilation, query);
+                            const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
                             let content = plugin.getGeneratedCodeByFile(resourceFile);
                             if( content ){
-                                if( isVueTemplate && (query.vue !== void 0 && query.type || /^<(template|script|style)>/.test(content))){
+                                if( isVueTemplate && (query.vue && query.type || /^<(template|script|style)>/.test(content))){
                                     resolve(inheritPlugin.transform.call(this, content, resource, opts));  
                                 }else{
                                     resolve({code:content, map:plugin.getGeneratedSourceMapByFile(resourceFile)||null});
