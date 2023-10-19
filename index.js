@@ -137,6 +137,48 @@ function EsPlugin(options={}){
     if( plugins ){
         hasCrossPlugin = true;
     }
+    const getCode = (resourcePath, query={})=>{
+        const compilation = compiler.createCompilation(resourcePath);
+        if( compilation ){
+            const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
+            let content = builder.getGeneratedCodeByFile(resourceFile);
+            if( content ){
+                return {
+                    code: content,
+                    map: null
+                };
+            }else{
+                return new Promise( (resolve,reject)=>{
+                    const code = readFileSync(resourcePath, "utf-8");
+                    if( !compilation.isValid(code) ){
+                        compilation.clear();
+                        compilation.parser(code);
+                        cache.set(compilation, code)
+                    }
+                    compilation.build(builder, (error,compilation)=>{
+                        const errors = errorHandle(this, compilation);
+                        if( error ){
+                            errors.push( error.toString() );
+                        }
+                        if( errors && errors.length > 0 ){
+                            reject( new Error( errors.join("\r\n") ) );
+                        }else{
+                            const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
+                            let content = builder.getGeneratedCodeByFile(resourceFile);
+                            if( content ){
+                                resolve({
+                                    code:content, 
+                                    map:builder.getGeneratedSourceMapByFile(resourceFile)||null
+                                })
+                            }
+                        }
+                    })
+                })
+            }
+        }
+        return null;
+    }
+
     return {
         name: 'vite:easescript',
         async handleHotUpdate(ctx) {
@@ -211,61 +253,19 @@ function EsPlugin(options={}){
             return null;
         },
 
-        getCode(resourcePath, query={}){
-            const compilation = compiler.createCompilation(resourcePath);
-            if( compilation ){
-                const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
-                let content = builder.getGeneratedCodeByFile(resourceFile);
-                if( content ){
-                    return {
-                        code: content,
-                        map: null
-                    };
-                }else{
-                    return new Promise( (resolve,reject)=>{
-                        const code = readFileSync(resourcePath, "utf-8");
-                        if( !compilation.isValid(code) ){
-                            compilation.clear();
-                            compilation.parser(code);
-                            cache.set(compilation, code)
-                        }
-                        compilation.build(builder, (error,compilation)=>{
-                            const errors = errorHandle(this, compilation);
-                            if( error ){
-                                errors.push( error.toString() );
-                            }
-                            if( errors && errors.length > 0 ){
-                                reject( new Error( errors.join("\r\n") ) );
-                            }else{
-                                const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
-                                let content = builder.getGeneratedCodeByFile(resourceFile);
-                                if( content ){
-                                    resolve({
-                                        code:content, 
-                                        map:builder.getGeneratedSourceMapByFile(resourceFile)||null
-                                    })
-                                }
-                            }
-                        })
-                    })
-                }
-            }
-            return null;
-        },
-
         load( id, opt ){
             if(!isVueTemplate){
                 if( filter(id) ){
                     const {resourcePath, query} = parseResource(id);
                     if(query.type==='style'){
-                        return this.getCode(resourcePath, query)
+                        return getCode(resourcePath, query)
                     }
                 }
                 return null;
             }
             const {resourcePath, query} = parseResource(id);
             if (query.vue && query.src) {
-                return this.getCode(resourcePath, query);
+                return getCode(resourcePath, query);
             }
             return inheritPlugin.load.call(this, id, opt);
         },
