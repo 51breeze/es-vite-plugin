@@ -42,12 +42,12 @@ function createFilter(include = [/\.es(\?|$)/i], exclude = []) {
     return id => filter(id);
 }
 
-function makePlugins(rawPlugins, options, cache){
+function makePlugins(rawPlugins, options, cache, fsWatcher){
     var plugins = null;
     var servers = null;
     var clients = null;
-    var fsWatcher = null;
     var excludes = null;
+    var onChanged = null;
     if( Array.isArray(rawPlugins) && rawPlugins.length > 0 ){
         servers = new WeakSet();
         excludes = new WeakSet();
@@ -69,21 +69,21 @@ function makePlugins(rawPlugins, options, cache){
         }
         const build = (compilation, changed)=>{
             if(!compilation || compilation.isDescriptionType || excludes.has(compilation)){
-                return;
+                return false;
             }
             if(!changed && compilation.parent){
                 if( servers.has(compilation.parent) ){
-                    return;
+                    return true;
                 }
             }
             if( changed ){
-                const code = readFileSync(compilation.file).toString();
+                const code = readFileSync(compilation.file,"utf-8").toString();
                 clients.delete(compilation);
                 if( !compilation.isValid(code) ){
                     compilation.clear();
                     compilation.parser(code);
                 }else{
-                    return;
+                    return true;
                 }
             }
             plugins.forEach( plugin=>{
@@ -109,19 +109,13 @@ function makePlugins(rawPlugins, options, cache){
                     },!flag);
                 }
             });
-        }
-
-        if( options.watch ){
-            fsWatcher = compiler.createWatcher();
-            if( fsWatcher ){
-                fsWatcher.on('change',(file)=>{
-                    build(compiler.createCompilation(file), true);
-                });
-            }
+            return true
         }
         compiler.on('onCreatedCompilation', build);
+        onChanged = (compilation)=>build(compilation, true);
     }
-    return {plugins, servers, fsWatcher, excludes, clients}
+    
+    return {plugins, servers, excludes, clients, onChanged}
 }
 
 const EXPORT_HELPER_ID = "\0plugin-vue:export-helper";
@@ -131,13 +125,22 @@ function EsPlugin(options={}){
     const filter = createFilter(options.include, options.exclude);
     const builder = compiler.applyPlugin(options.builder);
     const cache = new Map();
-    const {plugins,servers, excludes, clients} = makePlugins(options.plugins, options, cache);
+    const fsWatcher = options.watch ? compiler.createWatcher() : null;
+    const {plugins,servers, excludes, clients, onChanged} = makePlugins(options.plugins, options, cache, fsWatcher);
     const rawOpts = builder.options || {};
     const inheritPlugin = vuePlugin(Object.assign({include:/\.es$/}, rawOpts.vueOptions||{}));
     const isVueTemplate = rawOpts.format ==='vue-raw' || rawOpts.format ==='vue-template' || rawOpts.format ==='vue-jsx';
+    if( fsWatcher && onChanged){
+        fsWatcher.on('change',(file)=>{
+            const compilation = compiler.createCompilation(file)
+            onChanged(compilation);
+        });
+    }
+
     if( plugins ){
         hasCrossPlugin = true;
     }
+
     const parseVueFile=(id, realFlag=false)=>{
         if(!isVueTemplate)return id;
         if( id.startsWith('es-vue-virtual:')){
@@ -167,78 +170,54 @@ function EsPlugin(options={}){
             if(excludes){
                 excludes.add(compilation);
             }
+        
+            return new Promise( (resolve,reject)=>{
 
-            const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
-            const source = readFileSync(resourcePath, "utf-8");
-            let content = builder.getGeneratedCodeByFile(resourceFile);
-            let isValid = compilation.isValid();
-            if(content && isValid){
-
-                if( query.macro && typeof builder.getMacros ==='function'){
-                    const code = builder.getMacros(compilation) || '//Not found defined macro.'
-                    return {code:code, map:null};
-                }
-
-                if( isVueTemplate ){ 
-                    const queryItems = Object.keys(query).map( key=>`${key}=${query[key]}`);
-                    const id = queryItems.length>0 ? resourcePath+'?'+queryItems.join('&') : resourcePath;
-                    if(query.vue && query.type){
-                        return inheritPlugin.load.call(this, parseVueFile(id), opts)
-                    }else if(/^<(template|script|style)>/.test(content) ){
-                        return inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts)
-                    }
-                }
-
-                return {
-                    code: content,
-                    map: null
-                };
-                
-            }else{
-                if( !isValid ){
+                const source = readFileSync(resourcePath, "utf-8").toString();
+                if( !compilation.isValid(source) ){
                     compilation.clear();
                     if( !compilation.isDescriptionType ){
                         compilation.parser(source);
                     }
-                    cache.set(compilation, source);
                 }
-                return new Promise( (resolve,reject)=>{
-                    compilation.build(builder, async (error,compilation)=>{
-                        const errors = errorHandle(this, compilation);
-                        if( error ){
-                            errors.push( error.toString() );
+
+                compilation.build(builder, async (error,compilation)=>{
+                   
+                    const errors = errorHandle(this, compilation);
+                    if( error ){
+                        errors.push( error.toString() );
+                    }
+                    if( errors && errors.length > 0 ){
+                        reject( new Error( errors.join("\r\n") ) );
+                    }else{
+
+                        if( query.macro && typeof builder.getMacros ==='function'){
+                            const code = builder.getMacros(compilation) || '//Not found defined macro.'
+                            return resolve({code:code, map:null});
                         }
-                        if( errors && errors.length > 0 ){
-                            reject( new Error( errors.join("\r\n") ) );
-                        }else{
 
-                            if( query.macro && typeof builder.getMacros ==='function'){
-                                const code = builder.getMacros(compilation) || '//Not found defined macro.'
-                                return resolve({code:code, map:null});
-                            }
-
-                            const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
-                            let content = builder.getGeneratedCodeByFile(resourceFile);
-                            if( content ){
-                                if( isVueTemplate && (query.vue && query.type || /^<(template|script|style)>/.test(content))){
-                                    if( !query.src && query.vue && query.type ){
-                                        await inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts);
-                                        const queryItems = Object.keys(query).map( key=>`${key}=${query[key]}`);
-                                        const id = queryItems.length>0 ? resourcePath+'?'+queryItems.join('&') : resourcePath;
-                                        resolve( inheritPlugin.load.call(this,parseVueFile(id), opts) );  
-                                    }else{
-                                        resolve( inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts) );  
-                                    }
+                        const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
+                        let content = builder.getGeneratedCodeByFile(resourceFile);
+                        if( content ){
+                            if( isVueTemplate && (query.vue && query.type || /^<(template|script|style)>/.test(content))){
+                                if( !query.src && query.vue && query.type ){
+                                    await inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts);
+                                    const queryItems = Object.keys(query).map( key=>`${key}=${query[key]}`);
+                                    const id = queryItems.length>0 ? resourcePath+'?'+queryItems.join('&') : resourcePath;
+                                    resolve( inheritPlugin.load.call(this,parseVueFile(id), opts) );  
                                 }else{
-                                    resolve({code:content, map:builder.getGeneratedSourceMapByFile(resourceFile)||null});
+                                    resolve( inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts) );  
                                 }
                             }else{
-                                reject( new Error(`'${resourceFile}' is not exists.` ) );
+                                resolve({code:content, map:builder.getGeneratedSourceMapByFile(resourceFile)||null});
                             }
+                        }else{
+                            reject( new Error(`'${resourceFile}' is not exists.` ) );
                         }
-                    })
+                    }
                 })
-            }
+            })
+            
         }
         return null;
     }
@@ -392,12 +371,10 @@ function EsPlugin(options={}){
 
         transform(code, id, opts={}){
             if( !filter(id) ) return;
-            
             const {resourcePath,query} = parseResource(id);
             if(isVueTemplate && query.vue && query.type && code){
                 return inheritPlugin.transform.call(this, code, parseVueFile(id), opts);
             }
-            
             if(!code){
                 return getCode.call(this, resourcePath, query, opts);
             }
