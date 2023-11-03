@@ -119,6 +119,16 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
 }
 
 const EXPORT_HELPER_ID = "\0plugin-vue:export-helper";
+const helperCode = `
+export default (sfc, props) => {
+  const target = sfc.__vccOpts || sfc;
+  for (const [key, val] of props) {
+    target[key] = val;
+  }
+  return sfc;
+}
+`;
+
 var hasCrossPlugin = false;
 
 function EsPlugin(options={}){
@@ -149,7 +159,7 @@ function EsPlugin(options={}){
         return realFlag ? id : 'es-vue-virtual:'+id;
     }
 
-    function getCode(resourcePath, query={}, opts={}){
+    function getCode(resourcePath, resource, query={}, opts={}){
         const compilation = compiler.createCompilation(resourcePath);
         if( compilation ){
 
@@ -201,18 +211,15 @@ function EsPlugin(options={}){
                         if( content ){
                             if( isVueTemplate && (query.vue && query.type || /^<(template|script|style)>/.test(content))){
                                 if( !query.src && query.vue && query.type ){
-                                    await inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts);
-                                    const queryItems = Object.keys(query).map( key=>`${key}=${query[key]}`);
-                                    const id = queryItems.length>0 ? resourcePath+'?'+queryItems.join('&') : resourcePath;
-                                    resolve( inheritPlugin.load.call(this,parseVueFile(id), opts) );  
+                                    resolve( inheritPlugin.load.call(this,parseVueFile(resource), opts) );  
                                 }else{
-                                    resolve( inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts) );  
+                                    resolve( inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts) );
                                 }
                             }else{
                                 resolve({code:content, map:builder.getGeneratedSourceMapByFile(resourceFile)||null});
                             }
                         }else{
-                            reject( new Error(`'${resourceFile}' is not exists.` ) );
+                            reject( new Error(`'${resourceFile}' is not exists.`) );
                         }
                     }
                 })
@@ -226,6 +233,9 @@ function EsPlugin(options={}){
     return __EsPlugin = {
         name: 'vite:easescript',
         async handleHotUpdate(ctx) {
+            if(isVueTemplate){
+                return inheritPlugin.handleHotUpdate.call(this, ctx);
+            }
             let {file, modules, read} = ctx;
             let result = [];
             const compilation = compiler.createCompilation(file);
@@ -307,6 +317,9 @@ function EsPlugin(options={}){
             }
         },
         async resolveId(id, ...args){
+            if(isVueTemplate && id===EXPORT_HELPER_ID){
+                return id;
+            }
             id = parseVueFile(id, true);
             if( filter(id) ){
                 if( !path.isAbsolute(id) ){
@@ -325,11 +338,11 @@ function EsPlugin(options={}){
 
         load( id, opt ){
             if(isVueTemplate && id===EXPORT_HELPER_ID){
-                return inheritPlugin.load.call(this,id, opt)
+                return helperCode;
             }
             if( !filter(id) )return;
             const {resourcePath, query} = parseResource(id);
-            return getCode.call(this, resourcePath, query, opt);
+            return getCode.call(this, resourcePath, id, query, opt);
         },
 
         getDoucmentRoutes(file){
@@ -376,7 +389,7 @@ function EsPlugin(options={}){
                 return inheritPlugin.transform.call(this, code, parseVueFile(id), opts);
             }
             if(!code){
-                return getCode.call(this, resourcePath, query, opts);
+                return getCode.call(this, resourcePath, id, query, opts);
             }
         }
     }
