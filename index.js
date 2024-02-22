@@ -4,12 +4,12 @@ const rollupPluginUtils = require('rollup-pluginutils');
 const path = require('path');
 const vuePlugin=require("@vitejs/plugin-vue");
 const compiler = new Compiler();
-compiler.initialize();
-process.on('exit', (code) => {
+process.on('exit', () => {
     compiler.dispose();
 });
 
 function errorHandle(context, compilation){
+    if( !Array.isArray(compilation.errors) )return;
     return compilation.errors.filter( error=>{
         if( error.kind === 1){
             context.warn( error.toString() )
@@ -81,7 +81,7 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
                 clients.delete(compilation);
                 if( !compilation.isValid(code) ){
                     compilation.clear();
-                    compilation.parser(code);
+                    compilation.createStack(code);
                 }else{
                     return true;
                 }
@@ -89,7 +89,7 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
             plugins.forEach( plugin=>{
                 if( compiler.isPluginInContext(plugin , compilation) ){
                     const flag = changed || servers.has(compilation);
-                    compilation.build(plugin,(error)=>{
+                    const done = (error)=>{
                         if( !changed ){
                             cache.set(compilation, compilation.source);
                         }
@@ -106,12 +106,19 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
                         if( error ){
                             console.error( error instanceof Error ? error : error.toString() );
                         }
-                    },!flag);
+                    }
+                    compilation.ready().then(()=>{
+                        if(flag){
+                            plugin.build(compilation, done)
+                        }else{
+                            plugin.start(compilation, done)
+                        }
+                    })
                 }
             });
             return true
         }
-        compiler.on('onCreatedCompilation', build);
+        compiler.on('onParseDone', build);
         onChanged = (compilation)=>build(compilation, true);
     }
     
@@ -133,16 +140,16 @@ var hasCrossPlugin = false;
 
 function EsPlugin(options={}){
     const filter = createFilter(options.include, options.exclude);
-    const builder = compiler.applyPlugin(options.builder);
+    const mainPlugin = compiler.applyPlugin(options.builder);
     const cache = new Map();
     const fsWatcher = options.watch ? compiler.createWatcher() : null;
     const {plugins,servers, excludes, clients, onChanged} = makePlugins(options.plugins, options, cache, fsWatcher);
-    const rawOpts = builder.options || {};
+    const rawOpts = mainPlugin.options || {};
     const inheritPlugin = vuePlugin(Object.assign({include:/\.es$/}, rawOpts.vueOptions||{}));
     const isVueTemplate = rawOpts.format ==='vue-raw' || rawOpts.format ==='vue-template' || rawOpts.format ==='vue-jsx';
     if( fsWatcher && onChanged){
-        fsWatcher.on('change',(file)=>{
-            const compilation = compiler.createCompilation(file)
+        fsWatcher.on('change',async (file)=>{
+            const compilation = await compiler.createCompilation(file)
             onChanged(compilation);
         });
     }
@@ -159,8 +166,9 @@ function EsPlugin(options={}){
         return realFlag ? id : 'es-vue-virtual:'+id;
     }
 
-    function getCode(resourcePath, resource, query={}, opts={}){
-        const compilation = compiler.createCompilation(resourcePath);
+    async function getCode(resourcePath, resource, query={}, opts={}){
+        
+        const compilation = await compiler.ready(resourcePath)
         if( compilation ){
 
             if( servers && servers.has(compilation) ){
@@ -170,9 +178,9 @@ function EsPlugin(options={}){
                 };
             }
 
-            if(hasCrossPlugin && !(excludes && excludes.has(compilation)) && !compiler.isPluginInContext(builder , compilation) ){
+            if(hasCrossPlugin && !(excludes && excludes.has(compilation)) && !compiler.isPluginInContext(mainPlugin , compilation) ){
                 return {
-                    code:`export default null;/*Removed "${compilation.file}" file that is not in plugin scope the "${builder.name}". */`,
+                    code:`export default null;/*Removed "${compilation.file}" file that is not in plugin scope the "${mainPlugin.name}". */`,
                     map:null
                 };
             }
@@ -181,33 +189,26 @@ function EsPlugin(options={}){
                 excludes.add(compilation);
             }
         
-            return new Promise( (resolve,reject)=>{
+            return await new Promise( (resolve,reject)=>{
 
-                const source = readFileSync(resourcePath, "utf-8").toString();
-                if( !compilation.isValid(source) ){
-                    compilation.clear();
-                    if( !compilation.isDescriptionType ){
-                        compilation.parser(source);
-                    }
-                }
-
-                compilation.build(builder, async (error,compilation)=>{
+                mainPlugin.build(compilation, (error)=>{
                    
                     const errors = errorHandle(this, compilation);
                     if( error ){
+                        console.log( error )
                         errors.push( error.toString() );
                     }
                     if( errors && errors.length > 0 ){
                         reject( new Error( errors.join("\r\n") ) );
                     }else{
 
-                        if( query.macro && typeof builder.getMacros ==='function'){
-                            const code = builder.getMacros(compilation) || '//Not found defined macro.'
+                        if( query.macro && typeof mainPlugin.getMacros ==='function'){
+                            const code = mainPlugin.getMacros(compilation) || '//Not found defined macro.'
                             return resolve({code:code, map:null});
                         }
 
                         const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
-                        let content = builder.getGeneratedCodeByFile(resourceFile);
+                        let content = mainPlugin.getGeneratedCodeByFile(resourceFile);
                         if( content ){
                             if( isVueTemplate && (query.vue && query.type || /^<(template|script|style)>/.test(content))){
                                 if( !query.src && query.vue && query.type ){
@@ -216,7 +217,7 @@ function EsPlugin(options={}){
                                     resolve( inheritPlugin.transform.call(this, content, parseVueFile(resourcePath), opts) );
                                 }
                             }else{
-                                resolve({code:content, map:builder.getGeneratedSourceMapByFile(resourceFile)||null});
+                                resolve({code:content, map:mainPlugin.getGeneratedSourceMapByFile(resourceFile)||null});
                             }
                         }else{
                             reject( new Error(`'${resourceFile}' is not exists.`) );
@@ -225,8 +226,9 @@ function EsPlugin(options={}){
                 })
             })
             
+        }else{
+           throw new Error(`'${resourcePath}' is not exists.`)
         }
-        return null;
     }
 
     var __EsPlugin = null;
@@ -238,7 +240,7 @@ function EsPlugin(options={}){
             }
             let {file, modules, read} = ctx;
             let result = [];
-            const compilation = compiler.createCompilation(file);
+            const compilation = await compiler.createCompilation(file);
             if( compilation ){
                 const code = await read();
                 if( cache.get(compilation) !== code ){
@@ -252,13 +254,13 @@ function EsPlugin(options={}){
             if(isVueTemplate){
                 return inheritPlugin.config.call(this, config);
             }
-            if(!builder.options.ssr){
-                builder.options.ssr = config.build?.ssr;
+            if(!mainPlugin.options.ssr){
+                mainPlugin.options.ssr = config.build?.ssr;
             }
             return config;
         },
         configResolved(config){
-            const items = [builder];
+            const items = [mainPlugin];
             if( plugins ){
                 items.push(...plugins)
             }
@@ -346,11 +348,11 @@ function EsPlugin(options={}){
         },
 
         getDoucmentRoutes(file){
-            if( !filter(file) || builder.name !=='es-nuxt' ) return null;
-            return new Promise( (resolve,reject)=>{
-                const compilation = compiler.createCompilation(file);
+            if( !filter(file) || mainPlugin.name !=='es-nuxt' ) return null;
+            return new Promise( async(resolve,reject)=>{
+                const compilation = await compiler.ready(file);
                 if( compilation ){
-                    compilation.build(builder, (error,compilation)=>{
+                    mainPlugin.build(compilation, (error,builder)=>{
                         const errors = errorHandle(this, compilation);
                         if( error ){
                             errors.push( error.toString() );
@@ -358,7 +360,6 @@ function EsPlugin(options={}){
                         if( errors && errors.length > 0 ){
                             reject( new Error( errors.join("\r\n") ) );
                         }else{
-                            const nuxt = builder.getBuilder(compilation);
                             let module = compilation.mainModule;
                             let routes = [];
                             let items = [];
@@ -368,7 +369,7 @@ function EsPlugin(options={}){
                                 items.push(module);
                             }
                             items.forEach( module=>{
-                                const res = nuxt.getModuleRoutes(module);
+                                const res = builder.getModuleRoutes(module);
                                 if( res ){
                                     routes.push( ...res )
                                 }
