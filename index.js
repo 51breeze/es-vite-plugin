@@ -276,7 +276,7 @@ function EsPlugin(options={}){
                 excludes.add(compilation);
             }
             return await new Promise( async(resolve,reject)=>{
-                mainPlugin.build(compilation, (error)=>{
+                mainPlugin.build(compilation, async(error)=>{
                     const errors = errorHandle(this, compilation);
                     if( error ){
                         console.log( error )
