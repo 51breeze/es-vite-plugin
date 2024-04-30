@@ -3,9 +3,6 @@
   "version": "0.1.1",
   "description": "Script content transform for EaseScript",
   "main": "index.js",
-  "scripts": {
-    
-  },
   "repository": {
     "type": "git",
     "url": "git+git@github.com:51breeze/es-vite-plugin.git"
@@ -27,8 +24,5 @@
   "dependencies": {
     "@vitejs/plugin-vue": "^4.3.4",
     "rollup-pluginutils": "^2.8.2"
-  },
-  "devDependencies": {
-    
   }
 }

@@ -41,8 +41,10 @@ function errorHandle(context, compilation){
 }
 
 function normalizePath(compilation, query={}){
-    const attrs = query.scopeId ? {scopeId:query.scopeId} : null;
-    return compiler.normalizeModuleFile(compilation, query.id, query.type, query.file, attrs)
+    if(query.vue){
+        query.vue = '';
+    }
+    return compiler.normalizeModuleFile(compilation, query.id, query.type, query.file, query)
 }
 
 function parseResource(id) {
@@ -285,10 +287,19 @@ function EsPlugin(options={}){
                     if( errors && errors.length > 0 ){
                         reject( new Error( errors.join("\r\n") ) );
                     }else{
+                        
                         if( query.macro && typeof mainPlugin.getMacros ==='function'){
                             const code = await mainPlugin.getMacros(compilation) || '//Not found defined macro.'
                             return resolve({code:code, map:null});
                         }
+
+                        if(rawOpts.importSourceQuery.enabled){
+                            const presetQuery = mainPlugin.getResourceQuery(resource);
+                            if(presetQuery){
+                                Object.assign(query, presetQuery);
+                            }
+                        }
+
                         const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
                         let content = mainPlugin.getGeneratedCodeByFile(resourceFile);
                         let sourceMap = mainPlugin.getGeneratedSourceMapByFile(resourceFile) || null;
