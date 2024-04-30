@@ -40,10 +40,15 @@ function errorHandle(context, compilation){
     }).map( item=>item.toString() );
 }
 
-function normalizePath(compilation, query={}){
+function normalizePath(compilation, query={}, allowFieldQuery=[]){
     if(query.vue){
         query.vue = '';
     }
+    Object.keys(query).forEach( key=>{
+        if(!allowFieldQuery.includes(key)){
+           delete query[key]
+        }
+    });
     return compiler.normalizeModuleFile(compilation, query.id, query.type, query.file, query)
 }
 
@@ -250,12 +255,17 @@ function EsPlugin(options={}){
     }
     const hotReload = !!rawOpts.hot;
     const hotRecords = hotReload ? new Map() : null;
+    const allowFieldQuery = ['id','scopeId','type','file'];
     if(rawOpts.hot && isVueTemplate){
         rawOpts.hot = false;
     }
     if( plugins ){
         hasCrossPlugin = true;
     } 
+
+    if(rawOpts.importSourceQuery.enabled){
+        allowFieldQuery.push( ...Object.keys(rawOpts.importSourceQuery.query) );
+    }
 
     async function getCode(resourcePath, resource=null, query={}, opts={}, isLoad=false){
         if(!resource)resource = resourcePath;
@@ -294,13 +304,13 @@ function EsPlugin(options={}){
                         }
 
                         if(rawOpts.importSourceQuery.enabled){
-                            const presetQuery = mainPlugin.getResourceQuery(resource);
+                            let presetQuery = mainPlugin.getResourceQuery(resource);
                             if(presetQuery){
                                 Object.assign(query, presetQuery);
                             }
                         }
 
-                        const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query);
+                        const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query, allowFieldQuery);
                         let content = mainPlugin.getGeneratedCodeByFile(resourceFile);
                         let sourceMap = mainPlugin.getGeneratedSourceMapByFile(resourceFile) || null;
                         if( content ){
