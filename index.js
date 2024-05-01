@@ -40,18 +40,6 @@ function errorHandle(context, compilation){
     }).map( item=>item.toString() );
 }
 
-function normalizePath(compilation, query={}, allowFieldQuery=[]){
-    if(query.vue){
-        query.vue = '';
-    }
-    Object.keys(query).forEach( key=>{
-        if(!allowFieldQuery.includes(key)){
-           delete query[key]
-        }
-    });
-    return compiler.normalizeModuleFile(compilation, query.id, query.type, query.file, query)
-}
-
 function parseResource(id) {
     const [resourcePath, rawQuery] = id.split(`?`, 2);
     const query = Object.fromEntries(new URLSearchParams(rawQuery));
@@ -255,17 +243,12 @@ function EsPlugin(options={}){
     }
     const hotReload = !!rawOpts.hot;
     const hotRecords = hotReload ? new Map() : null;
-    const allowFieldQuery = ['id','scopeId','type','file'];
     if(rawOpts.hot && isVueTemplate){
         rawOpts.hot = false;
     }
     if( plugins ){
         hasCrossPlugin = true;
     } 
-
-    if(rawOpts.importSourceQuery.enabled){
-        allowFieldQuery.push( ...Object.keys(rawOpts.importSourceQuery.query) );
-    }
 
     async function getCode(resourcePath, resource=null, query={}, opts={}, isLoad=false){
         if(!resource)resource = resourcePath;
@@ -303,23 +286,38 @@ function EsPlugin(options={}){
                             return resolve({code:code, map:null});
                         }
 
-                        if(rawOpts.importSourceQuery.enabled){
-                            let presetQuery = mainPlugin.getResourceQuery(resource);
-                            if(presetQuery){
-                                Object.assign(query, presetQuery);
+                        let content = null;
+                        let sourceMap =  null;
+                        resourcePath = compilation.file || compiler.normalizePath(resourcePath);
+
+                        if(!isVueTemplate && query.type === 'style' || query.type === 'embedAssets'){
+                            let asset = mainPlugin.getBuildAssets(resourcePath, query.index, query.type);
+                            if(asset){
+                                content = asset.content;
+                            }
+                        }else{
+                            let buildModule = mainPlugin.getBuildModule(resourcePath, isVueTemplate || query.type ? null : query.id )
+                            if(buildModule){
+                                content = buildModule.content
+                                sourceMap = buildModule.sourceMap
                             }
                         }
 
-                        const resourceFile = isVueTemplate && query.vue ? resourcePath : normalizePath(compilation, query, allowFieldQuery);
-                        let content = mainPlugin.getGeneratedCodeByFile(resourceFile);
-                        let sourceMap = mainPlugin.getGeneratedSourceMapByFile(resourceFile) || null;
                         if( content ){
+                            
+                            if(query.type === 'embedAssets'){
+                                return resolve({
+                                    code:`export default ${JSON.stringify(content)}`
+                                });
+                            }
+
                             if(query.src){
                                 return resolve({
                                     code:content,
                                     map:sourceMap
                                 })
                             }
+
                             if( isVueTemplate && (query.vue && query.type || /^<(template|script|style)>/.test(content))){
                                 if(query.vue && query.type){
                                     resolve( inheritPlugin.load.call(this,parseVueFile(resource), opts) ); 
@@ -338,14 +336,16 @@ function EsPlugin(options={}){
                                     });
                                 }
                             }else{
-                                if(query && query.type === 'style' && query.file && compileStyle){
-                                    const lang = query.file.split('.').pop();
+                                if(query && query.type === 'style' && compileStyle){
+                                    const lang = query.lang;
+                                    const scoped = !!query.scopeId;
+                                    const scopeId = scoped ? (rawOpts.scopeIdPrefix + query.scopeId) : '';
                                     const result = compileStyle({
                                         source:content,
                                         filename:resourcePath,
-                                        scoped:!!query.scopeId,
+                                        scoped,
                                         inMap:sourceMap,
-                                        id:query.scopeId || "",
+                                        id:scopeId,
                                         preprocessLang:allowPreprocessLangs.includes(lang) ? lang :  undefined,
                                         isProd:isProduction
                                     });
