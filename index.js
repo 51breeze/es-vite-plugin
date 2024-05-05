@@ -28,6 +28,20 @@ process.on('exit', () => {
     compiler.dispose();
 });
 
+function getBuilderPlugin(config={}){
+    const load = ()=>{
+        if(config.plugin && typeof config.plugin==='function'){
+            return config.plugin;
+        }else if(config.name){
+            return require(config.name)
+        }else{
+            throw new Error('Plugin name invalid')
+        }
+    }
+    const builder = load();
+    return new builder(compiler, config.options)
+}
+
 function errorHandle(context, compilation){
     if( !Array.isArray(compilation.errors) )return;
     return compilation.errors.filter( error=>{
@@ -102,7 +116,7 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
         servers = new WeakSet();
         excludes = new WeakSet();
         clients = new Map()
-        plugins = rawPlugins.map( plugin=>compiler.applyPlugin(plugin) );
+        plugins = rawPlugins.map( plugin=>getBuilderPlugin(plugin) );
         const watchDeps=(compilation, deps, subFlag=false)=>{
             if(!compilation || compilation.isDescriptionType)return;
             const isLocal = compilation.pluginScopes.scope==='local';
@@ -225,8 +239,10 @@ function getHotReplaceCode(compilation, code, records={}){
 }
 
 function EsPlugin(options={}){
+
     const filter = createFilter(options.include, options.exclude);
-    const mainPlugin = compiler.applyPlugin(options.builder);
+    const mainPlugin = getBuilderPlugin(options.builder)
+
     const cache = new Map();
     const fsWatcher = options.watch ? compiler.createWatcher() : null;
     const {plugins,servers, excludes, clients} = makePlugins(options.plugins, options, cache, fsWatcher);
