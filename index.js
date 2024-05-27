@@ -543,6 +543,12 @@ function EsPlugin(options={}){
             if(isVueTemplate && id===EXPORT_HELPER_ID){
                 return helperCode;
             }
+            //fix: use-empty-values, config-provider 这两个组件存在相互依赖，在打包构建时有问题
+            if(id && id.includes('element-plus/es/hooks/use-empty-values/index.mjs')){
+                const [resourcePath] = id.split(`?`, 2);
+                const code = readFileSync(resourcePath).toString();
+                return code.replace(`import '../../components/config-provider/index.mjs';`, '')
+            }
             if( !filter(id) )return;
             const {resourcePath, query} = parseResource(id);
             pluginContext = this;
