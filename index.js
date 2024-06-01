@@ -290,7 +290,6 @@ function EsPlugin(options={}){
                 mainPlugin.build(compilation, async(error)=>{
                     const errors = errorHandle(this, compilation);
                     if( error ){
-                        console.log( error )
                         errors.push( error.toString() );
                     }
                     if( errors && errors.length > 0 ){
@@ -396,26 +395,36 @@ function EsPlugin(options={}){
                     cache.set(compilation, code);
                     const oldSection = getSections(compilation);
                     await compilation.ready();
-                    const changed = new Set();
-                    const newSection = getSections(compilation);
-                    let hasStyleChanged = false;
-                    hotRecords.set(compilation, {prev:oldSection, last:newSection});
-                    modules.forEach( mod=>{
-                        if(directRequestRE.test(mod.url))return;
-                        if(styleRequestRE.test(mod.url)){
-                            if(oldSection.style !== newSection.style){
+                    if(compilation.stack){
+                        const changed = new Set();
+                        const newSection = getSections(compilation);
+                        let hasStyleChanged = false;
+                        hotRecords.set(compilation, {prev:oldSection, last:newSection});
+                        modules.forEach( mod=>{
+                            if(directRequestRE.test(mod.url))return;
+                            if(styleRequestRE.test(mod.url)){
+                                if(oldSection.style !== newSection.style){
+                                    changed.add(mod);
+                                    hasStyleChanged = true;
+                                }
+                            }else if(oldSection.script !== newSection.script || oldSection.jsx !== newSection.jsx){
                                 changed.add(mod);
-                                hasStyleChanged = true;
                             }
-                        }else if(oldSection.script !== newSection.script || oldSection.jsx !== newSection.jsx){
-                            changed.add(mod);
+                        });
+                        if(isVueTemplate && hasStyleChanged){
+                            const result = await getCode(file, file, {src:true});
+                            await inheritPlugin.transform.call(pluginContext, result.code, parseVueFile(file), {})
                         }
-                    });
-                    if(isVueTemplate && hasStyleChanged){
-                        const result = await getCode(file, file, {src:true});
-                        await inheritPlugin.transform.call(pluginContext, result.code, parseVueFile(file), {})
+                        return Array.from(changed.values());
+                    }else{
+                        compilation.errors.forEach( error=>{
+                            if( error.kind === 1){
+                                console.warn( error.toString() )
+                            }else if(error.kind === 0){
+                                console.error( error.toString() )
+                            }
+                        });
                     }
-                    return Array.from(changed.values());
                 }
                 return [];
             }
