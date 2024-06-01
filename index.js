@@ -1,5 +1,6 @@
 const {readFileSync}  = require('fs');
 const Compiler = require("easescript/lib/core/Compiler");
+const Diagnostic = require("easescript/lib/core/Diagnostic");
 const rollupPluginUtils = require('rollup-pluginutils');
 const path = require('path');
 const vuePlugin=require("@vitejs/plugin-vue");
@@ -45,11 +46,11 @@ function getBuilderPlugin(config={}){
 function errorHandle(context, compilation){
     if( !Array.isArray(compilation.errors) )return;
     return compilation.errors.filter( error=>{
-        if( error.kind === 1){
+        if(error.kind === Diagnostic.ERROR){
+            return true;
+        }else{
             context.warn( error.toString() )
             return false;
-        }else{
-            return true;
         }
     }).map( item=>item.toString() );
 }
@@ -418,10 +419,10 @@ function EsPlugin(options={}){
                         return Array.from(changed.values());
                     }else{
                         compilation.errors.forEach( error=>{
-                            if( error.kind === 1){
-                                console.warn( error.toString() )
-                            }else if(error.kind === 0){
+                            if(error.kind === Diagnostic.ERROR){
                                 console.error( error.toString() )
+                            }else{
+                                console.warn( error.toString() )
                             }
                         });
                     }
