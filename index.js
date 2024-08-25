@@ -103,7 +103,7 @@ function getSections(compilation){
     return {jsx, style, script, hasStyleScoped};
 }
 
-function createFilter(include = [/\.es(\?|$)/i], exclude = []) {
+function createFilter(include = [/\.(es|ease)(\?|$)/i], exclude = []) {
     const filter = rollupPluginUtils.createFilter(include, exclude);
     return id => filter(id);
 }
@@ -118,32 +118,15 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
         excludes = new WeakSet();
         clients = new Map()
         plugins = rawPlugins.map( plugin=>getBuilderPlugin(plugin) );
-        const watchDeps=(compilation, deps, subFlag=false)=>{
-            if(!compilation || compilation.isDescriptionType)return;
-            const isLocal = compilation.pluginScopes.scope==='local';
-            if(!servers.has(compilation)){
-                if(isLocal && fsWatcher){
-                    fsWatcher.add(compilation.file);
-                }
-                servers.add(compilation);
-            }
-            if( isLocal ){
-                if(deps && subFlag)deps.add(compilation);
-                compilation.getCompilationsOfDependency().forEach( (dep)=>watchDeps(dep, deps, true) );
-            }
-        }
+
         const build = (compilation, changed)=>{
-            if(!compilation || compilation.isDescriptionType || excludes.has(compilation)){
+
+            if(!compilation || compilation.isDescriptionType){
                 return false;
             }
-            if(!changed && compilation.parent){
-                if( servers.has(compilation.parent) ){
-                    return true;
-                }
-            }
+
             if( changed ){
                 const code = readFileSync(compilation.file,"utf-8").toString();
-                clients.delete(compilation);
                 if( !compilation.isValid(code) ){
                     compilation.clear();
                     compilation.createStack(code);
@@ -151,29 +134,20 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
                     return true;
                 }
             }
+
             plugins.forEach( plugin=>{
                 if( compiler.isPluginInContext(plugin , compilation) ){
-                    const flag = changed || servers.has(compilation);
                     const done = (error)=>{
-                        if( !changed ){
-                            cache.set(compilation, compilation.source);
-                        }
-
-                        if( !clients.has(compilation) ){
-                            const deps = new Set();
-                            watchDeps(compilation, deps)
-                            const items = [...deps].map( dep=>{
-                                return `import "${dep.file}";\r\n`
-                            });
-                            clients.set(compilation, `${items.join('')}export default null;/*Removed service side code ${Math.random()}*/`)
-                        }
-
-                        if( error ){
+                        if(error){
                             console.error( error instanceof Error ? error : error.toString() );
+                        }else{
+                            if(!changed){
+                                cache.set(compilation, compilation.source);
+                            }
                         }
                     }
                     compilation.ready().then(()=>{
-                        if(flag){
+                        if(changed){
                             plugin.build(compilation, done)
                         }else{
                             plugin.start(compilation, done)
@@ -243,7 +217,6 @@ function EsPlugin(options={}){
 
     const filter = createFilter(options.include, options.exclude);
     const mainPlugin = getBuilderPlugin(options.builder)
-
     const cache = new Map();
     const fsWatcher = options.watch ? compiler.createWatcher() : null;
     const {plugins,servers, excludes, clients} = makePlugins(options.plugins, options, cache, fsWatcher);
@@ -272,21 +245,14 @@ function EsPlugin(options={}){
         const compilation = await compiler.ready(resourcePath)
         if( compilation ){
             cache.set(compilation, compilation.source);
-            if( servers && servers.has(compilation) ){
-                return {
-                    code:clients.get(compilation) || '',
-                    map:null
-                };
-            }
-            if(hasCrossPlugin && !(excludes && excludes.has(compilation)) && !compiler.isPluginInContext(mainPlugin , compilation) ){
+            
+            if(hasCrossPlugin && !compiler.isPluginInContext(mainPlugin , compilation) ){
                 return {
                     code:`export default null;/*Removed "${compilation.file}" file that is not in plugin scope the "${mainPlugin.name}". */`,
                     map:null
                 };
             }
-            if(excludes){
-                excludes.add(compilation);
-            }
+
             return await new Promise( async(resolve,reject)=>{
                 mainPlugin.build(compilation, async(error)=>{
                     const errors = errorHandle(this, compilation);
@@ -501,9 +467,9 @@ function EsPlugin(options={}){
             id = parseVueFile(id, true);
             if( filter(id) ){
                 if( !path.isAbsolute(id) ){
-                    const className = compiler.getFileClassName(id).replace(/\//g,'.');
+                    const className = compiler.getFileClassName(id, true);
                     const desc = Namespace.globals.get(className);
-                    if( desc && desc.compilation ){
+                    if(desc && desc.compilation){
                         return desc.compilation.file;
                     }
                 }
