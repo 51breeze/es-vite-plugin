@@ -331,6 +331,11 @@ function EsPlugin(options={}){
                                         preprocessLang:allowPreprocessLangs.includes(lang) ? lang :  undefined,
                                         isProd:isProduction
                                     });
+                                    if(result.errors){
+                                        result.errors.forEach( err=>{
+                                            console.error(err)
+                                        })
+                                    }
                                     content =result.code;
                                     sourceMap = result.map;
                                 }
@@ -458,6 +463,13 @@ function EsPlugin(options={}){
         buildStart(){
             if(isVueTemplate){
                 inheritPlugin.buildStart.call(this);
+            }
+            if(plugins){
+                plugins.forEach(plugin=>{
+                    if(typeof plugin.buildStart ==='function'){
+                        plugin.buildStart();
+                    }
+                })
             }
         },
         async resolveId(id, ...args){
