@@ -5,7 +5,7 @@ const rollupPluginUtils = require('rollup-pluginutils');
 const path = require('path');
 const vuePlugin=require("@vitejs/plugin-vue");
 const {compileStyle}=require("vue/compiler-sfc");
-const compiler = new Compiler();
+const compiler = Compiler.compiler();
 const EXPORT_HELPER_ID = "\0plugin-vue:export-helper";
 const helperCode = `
 export default (sfc, props) => {
@@ -24,10 +24,6 @@ const directRequestRE = /(?:\?|&)direct\b/;
 const styleRequestRE = /(?:\?|&)type=style\b/;
 const removeNewlineRE = /[\r\n\t]/g;
 var hasCrossPlugin = false;
-
-process.on('exit', () => {
-    compiler.dispose();
-});
 
 function getBuilderPlugin(config={}){
     const load = ()=>{
@@ -110,22 +106,25 @@ function createFilter(include = [/\.(es|ease)(\?|$)/i], exclude = []) {
 
 function makePlugins(rawPlugins, options, cache, fsWatcher){
     var plugins = null;
-    var servers = null;
-    var clients = null;
-    var excludes = null;
     if( Array.isArray(rawPlugins) && rawPlugins.length > 0 ){
-        servers = new WeakSet();
-        excludes = new WeakSet();
-        clients = new Map()
         plugins = rawPlugins.map( plugin=>getBuilderPlugin(plugin) );
-
+        const watchedRecords = new WeakSet();
+        const addWatch = (compilation)=>{
+            if(!watchedRecords.has(compilation)){
+                watchedRecords.add(compilation)
+                fsWatcher.add(compilation.file).on('change',async (file)=>{
+                    const compilation = compiler.getCompilationByFile(file);
+                    if(compilation){
+                        build(compilation, true);
+                    }
+                });
+            }
+        }
         const build = (compilation, changed)=>{
-
             if(!compilation || compilation.isDescriptionType){
                 return false;
             }
-
-            if( changed ){
+            if(changed){
                 const code = readFileSync(compilation.file,"utf-8").toString();
                 if( !compilation.isValid(code) ){
                     compilation.clear();
@@ -134,9 +133,9 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
                     return true;
                 }
             }
-
             plugins.forEach( plugin=>{
-                if( compiler.isPluginInContext(plugin , compilation) ){
+                if(compiler.isPluginInContext(plugin , compilation)){
+                    addWatch(compilation)
                     const done = (error)=>{
                         if(error){
                             console.error( error instanceof Error ? error : error.toString() );
@@ -158,15 +157,9 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
             return true
         }
         compiler.on('onParseDone', build);
-        if(fsWatcher){
-            fsWatcher.on('change',async (file)=>{
-                const compilation = await compiler.createCompilation(file);
-                build(compilation, true);
-            });
-        }
     }
     
-    return {plugins, servers, excludes, clients}
+    return plugins
 }
 
 function getHash(text) {
@@ -219,7 +212,7 @@ function EsPlugin(options={}){
     const mainPlugin = getBuilderPlugin(options.builder)
     const cache = new Map();
     const fsWatcher = options.watch ? compiler.createWatcher() : null;
-    const {plugins,servers, excludes, clients} = makePlugins(options.plugins, options, cache, fsWatcher);
+    const plugins = makePlugins(options.plugins, options, cache, fsWatcher);
     const rawOpts = mainPlugin.options || {};
     const inheritPlugin = vuePlugin(Object.assign({include:/\.es$/}, rawOpts.vueOptions||{}));
     const isVueTemplate = rawOpts.format ==='vue-raw' || rawOpts.format ==='vue-template' || rawOpts.format ==='vue-jsx';
@@ -231,14 +224,16 @@ function EsPlugin(options={}){
         }
         return realFlag ? id : 'es-vue-virtual:'+id;
     }
+    
     const hotReload = !!rawOpts.hot;
     const hotRecords = hotReload ? new Map() : null;
     if(rawOpts.hot && isVueTemplate){
         rawOpts.hot = false;
     }
-    if( plugins ){
+
+    if(plugins){
         hasCrossPlugin = true;
-    } 
+    }
 
     async function getCode(resourcePath, resource=null, query={}, opts={}, isLoad=false){
         if(!resource)resource = resourcePath;
