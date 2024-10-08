@@ -110,7 +110,7 @@ function makePlugins(rawPlugins, options, cache, fsWatcher){
         plugins = rawPlugins.map( plugin=>getBuilderPlugin(plugin) );
         const watchedRecords = new WeakSet();
         const addWatch = (compilation)=>{
-            if(!watchedRecords.has(compilation)){
+            if(fsWatcher && !watchedRecords.has(compilation)){
                 watchedRecords.add(compilation)
                 fsWatcher.add(compilation.file).on('change',async (file)=>{
                     const compilation = compiler.getCompilationByFile(file);
