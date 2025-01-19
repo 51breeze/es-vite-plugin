@@ -3,22 +3,8 @@ const Compiler = require("easescript/lib/core/Compiler");
 const Diagnostic = require("easescript/lib/core/Diagnostic");
 const rollupPluginUtils = require('rollup-pluginutils');
 const path = require('path');
-const vuePlugin=require("@vitejs/plugin-vue");
 const {compileStyle}=require("vue/compiler-sfc");
 const compiler = Compiler.compiler();
-const EXPORT_HELPER_ID = "\0plugin-vue:export-helper";
-const helperCode = `
-export default (sfc, props) => {
-  const target = sfc.__vccOpts || sfc;
-  for (const [key, val] of props) {
-    target[key] = val;
-  }
-  return sfc;
-}
-`;
-
-const {createHash} = require('node:crypto');
-
 const allowPreprocessLangs =['less', 'sass','scss','styl','stylus'];
 const directRequestRE = /(?:\?|&)direct\b/;
 const styleRequestRE = /(?:\?|&)type=style\b/;
@@ -161,51 +147,7 @@ function makePlugins(rawPlugins, options, cache, fsWatcher, getContext){
     return plugins
 }
 
-function getHash(text) {
-    return createHash("sha256").update(text).digest("hex").substring(0, 8);
-}
-
-function getHotReplaceCode(compilation, code, records={}){
-    const prev = records.prev;
-    const last = records.last;
-    const prerender = prev && last && prev.script === last.script && prev.style === last.style && prev.jsx !== last.jsx;
-
-    if(!compilation.modules.size || compilation.isDescriptionType){
-        return code;
-    }
-
-    code = code.replace(/\bexport\s+default\s+/, 'const __$exports__ = ')
-
-    const items = [
-        code,
-        `export default __$exports__;`
-    ];
-
-    if( prerender ){
-        items.push(`export const __$$prerender_$only__ = true;`)
-    }
-
-    const id = getHash( compilation.file );
-
-    items.push(`if(import.meta.hot){`,
-    `  __$exports__.__vccOpts.__hmrId = "${id}";`,
-    `  __VUE_HMR_RUNTIME__.createRecord("${id}", __$exports__);`,
-    `  import.meta.hot.accept(mod => {`,
-    `  if (!mod) return`,
-    `  const {default: updated, __$$prerender_$only__ } = mod`,
-    `  console.log(updated.prototype.render);`,
-    `  if (__$$prerender_$only__) {`,
-    `    __VUE_HMR_RUNTIME__.rerender("${id}", updated.prototype.render)`,
-    `  } else {`,
-    `    __VUE_HMR_RUNTIME__.reload("${id}", updated)`,
-    `  }`,
-    `  });`,
-    `}`)
-
-    return items.join('\n')
-}
-
-function EsPlugin(options={}){
+function plugin(options={}){
     const getContext = ()=>pluginContext;
     const filter = createFilter(options.include, options.exclude);
     const mainPlugin = getBuildPlugin(options.builder)
@@ -232,6 +174,20 @@ function EsPlugin(options={}){
                 };
             }
 
+            if(query.macro){
+                query.callhook = true;
+                query.action = "macros";
+            }
+
+            if(query.callhook != null && query.action){
+                try{
+                    let code =  await mainPlugin.callHook(compilation, query);
+                    return {code}
+                }catch(e){
+                    return getContext().error(e);
+                }
+            }
+
             let buildGraph = null;
             try{
                 if(query.id && query.type == null){
@@ -248,15 +204,9 @@ function EsPlugin(options={}){
                 getContext().error(`Build error no result. on the "${resource}"`);
                 return;
             }
-                        
-            if( query.macro && typeof mainPlugin.getMacros ==='function'){
-                const code = await mainPlugin.getMacros(compilation) || '//Not found defined macro.'
-                return {code:code, map:null};
-            }
-
-            let content = null;
-            let sourcemap =  null;
-           
+            
+            let content = buildGraph.code;
+            let sourcemap =  buildGraph.sourcemap;
             if(query.type === 'style' || query.type === 'embedAssets'){
                 let asset = buildGraph.findAsset(asset=>asset.id == query.index);
                 if(!asset){
@@ -291,20 +241,16 @@ function EsPlugin(options={}){
                     content =result.code;
                     sourcemap = result.map;
                 }
-                return {code:content, map:sourcemap};
-            }else{
-                content = buildGraph.code;
-                sourcemap =  buildGraph.sourcemap;
-                if(query.src){
-                    return {
-                        code:content,
-                        map:sourcemap
-                    }
-                }
-                if(!content){
-                    getContext().error(`Build error code is empty. on the "${resource}"`);
-                    return;
-                }
+            }
+
+            if(!content){
+                getContext().error(`Build error code is empty. on the "${resource}"`);
+                return;
+            }
+
+            return {
+                code:content,
+                map:sourcemap
             }
             
         }else{
@@ -313,7 +259,7 @@ function EsPlugin(options={}){
     }
 
     let pluginContext = null;
-    const Plugin = {
+    const api = {
         name: 'vite:easescript',
         async handleHotUpdate(ctx) {
             let {file, modules, read} = ctx;
@@ -378,40 +324,14 @@ function EsPlugin(options={}){
                 return id;
             }
         },
-        getDoucmentRoutes(file){
+        async getRoutes(file){
             if( !filter(file) || mainPlugin.name !=='es-nuxt' ) return null;
-            return new Promise( async(resolve,reject)=>{
-                const compilation = await compiler.ready(file);
-                if( compilation ){
-                    mainPlugin.build(compilation, (error,builder)=>{
-                        const errors = errorHandle(this, compilation);
-                        if( error ){
-                            errors.push( error.toString() );
-                        }
-                        if( errors && errors.length > 0 ){
-                            reject( new Error( errors.join("\r\n") ) );
-                        }else{
-                            let module = compilation.mainModule;
-                            let routes = [];
-                            let items = [];
-                            if(!module && compilation.modules.size > 0){
-                                items = Array.from(compilation.modules.values()).filter( m=>m.isClass && !m.isDescriptionType )
-                            }else{
-                                items.push(module);
-                            }
-                            items.forEach( module=>{
-                                const res = builder.getModuleRoutes(module);
-                                if( res ){
-                                    routes.push( ...res )
-                                }
-                            });
-                            resolve(routes);
-                        }
-                    })
-                }else{
-                    reject( new Error( `"${file}" is not exists.` ) );
-                }
-            });
+            const compilation = await compiler.ready(file);
+            if(compilation){
+                return await mainPlugin.resolveRoutes(compilation);
+            }else{
+                throw new Error( `getRoutes "${file}" is not exists.` );
+            }
         },
 
         load(id, opt){
@@ -435,7 +355,7 @@ function EsPlugin(options={}){
         }
     }
 
-    return Plugin;
+    return api;
 }
 
-export default EsPlugin;
+export default plugin;
