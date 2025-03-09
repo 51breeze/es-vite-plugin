@@ -1,7 +1,7 @@
 {
   "name": "es-vite-plugin",
-  "version": "0.3.0",
-  "description": "Script content transform for EaseScript",
+  "version": "0.4.0",
+  "description": "EaseScript Code loader for Vite",
   "main": "index.js",
   "repository": {
     "type": "git",

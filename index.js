@@ -1,4 +1,4 @@
-const {readFileSync}  = require('fs');
+const {readFileSync, existsSync}  = require('fs');
 const Compiler = require("easescript/lib/core/Compiler");
 const Diagnostic = require("easescript/lib/core/Diagnostic");
 const rollupPluginUtils = require('rollup-pluginutils');
@@ -38,10 +38,13 @@ function errorHandle(context, compilation){
 }
 
 function parseResource(id) {
-    const [resourcePath, rawQuery] = id.split(`?`, 2);
+    let [resourcePath, rawQuery] = id.split(`?`, 2);
     const query = Object.fromEntries(new URLSearchParams(rawQuery));
     if (query.vue != null) {
         query.vue = true;
+    }
+    if(resourcePath.endsWith('.es.vue')){
+        resourcePath = resourcePath.slice(0, -4);
     }
     return {
         resourcePath,
@@ -85,7 +88,7 @@ function getSections(compilation){
     return {jsx, style, script, hasStyleScoped};
 }
 
-function createFilter(include = [/\.(es|ease)(\?|$)/i], exclude = []) {
+function createFilter(include = [/\.(es|ease)(\.vue)?(\?|$)/i], exclude = []) {
     const filter = rollupPluginUtils.createFilter(include, exclude);
     return id => filter(id);
 }
@@ -219,11 +222,11 @@ function plugin(options={}){
                     content = `export default ${JSON.stringify(content)}`;
                 }else if(query.type === 'style' && compileStyle){
                     const lang = query.lang;
-                    const scopePrefix = builder.options?.vue?.scopePrefix || "";
+                    const scopePrefix = mainPlugin.options?.vue?.scopePrefix || "";
                     const scopeId = query.scoped ? (scopePrefix + query.scoped) : '';
                     const result = compileStyle({
                         source:content,
-                        filename:file,
+                        filename:resourcePath,
                         scoped:!!scopeId,
                         inMap:sourcemap,
                         id:scopeId,
@@ -262,26 +265,36 @@ function plugin(options={}){
     const api = {
         name: 'vite:easescript',
         async handleHotUpdate(ctx) {
-            let {file, modules, read} = ctx;
+            let {file, modules, read, server} = ctx;
             if(!filter(file) || !hotRecords)return;
             const compilation = await compiler.createCompilation(file);
             if(compilation){
+                if(rawOpts.importFormation.ext?.enabled && rawOpts.importFormation.ext.suffix){
+                    ctx.file = compiler.resolveExtFormat(file, rawOpts.importFormation.ext.suffix)
+                }
                 const code = await read();
                 if(cache.get(compilation) !== code){
+                    if(!modules.length){
+                        modules = [
+                            ...Array.from(server.moduleGraph.fileToModulesMap.get(ctx.file) || []),
+                        ];
+                    }
                     cache.set(compilation, code);
                     const oldSection = getSections(compilation);
                     await compilation.ready();
                     if(compilation.stack){
                         const changed = new Set();
                         const newSection = getSections(compilation);
-                        let hasStyleChanged = false;
                         hotRecords.set(compilation, {prev:oldSection, last:newSection});
                         modules.forEach( mod=>{
                             if(directRequestRE.test(mod.url))return;
-                            if(styleRequestRE.test(mod.url)){
+                            if(mod.url.includes("macro=true")){
+                                if(oldSection.script !== newSection.script){
+                                    changed.add(mod);
+                                }
+                            }else if(styleRequestRE.test(mod.url)){
                                 if(oldSection.style !== newSection.style){
                                     changed.add(mod);
-                                    hasStyleChanged = true;
                                 }
                             }else if(oldSection.script !== newSection.script || oldSection.jsx !== newSection.jsx){
                                 changed.add(mod);
@@ -312,17 +325,38 @@ function plugin(options={}){
         buildStart(){
             pluginContext = this;
         },
-        async resolveId(id, ...args){
-            if( filter(id) ){
-                if( !path.isAbsolute(id) ){
-                    const className = compiler.getFileClassName(id, true);
-                    const desc = Namespace.globals.get(className);
-                    if(desc && desc.compilation){
-                        return desc.compilation.file;
-                    }
-                }
-                return id;
+        async resolveId(id){
+            if(!filter(id))return;
+            let query = null;
+            if(id.includes('?')){
+                let [_source, _query] = id.split('?', 2);
+                id = _source;
+                query = _query;
             }
+            let file = id;
+            let otherExtname = null;
+            let ext = rawOpts.importFormation?.ext;
+            if(ext?.enabled && ext.suffix){
+                let extname = path.extname(file);
+                if(!compiler.isExtensionName(extname)){
+                    otherExtname = extname;
+                    file = file.slice(0,-extname.length)
+                }
+            }
+            let isAbs = path.isAbsolute(file);
+            if(!isAbs || !existsSync(file)){
+                if(isAbs && file.startsWith('/')){
+                    file = file.slice(1)
+                }
+                file = compiler.resolveManager.resolveFile(file) || file;
+            }
+            if(otherExtname){
+                file += otherExtname;
+            }
+            if(query){
+                file += '?'+query;
+            }
+            return file;
         },
         async getRoutes(file){
             if( !filter(file) || mainPlugin.name !=='es-nuxt' ) return null;
