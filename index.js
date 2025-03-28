@@ -207,6 +207,14 @@ function plugin(options={}){
                 getContext().error(`Build error no result. on the "${resource}"`);
                 return;
             }
+
+            compilation.errors.forEach(error=>{
+                if(error.kind === Diagnostic.ERROR){
+                    getContext().error(error.toString());
+                }else{
+                    getContext().warn(error.toString());
+                }
+            });
             
             let content = buildGraph.code;
             let sourcemap =  buildGraph.sourcemap;
@@ -329,7 +337,10 @@ function plugin(options={}){
             if(!filter(id))return;
             let query = null;
             if(id.includes('?')){
-                let [_source, _query] = id.split('?', 2);
+                let [_source, _query, ..._other] = id.split('?');
+                if(_other.length>0){
+                    _query = [..._other, _query].filter(Boolean).join('&')
+                } 
                 id = _source;
                 query = _query;
             }
