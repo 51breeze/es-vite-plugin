@@ -22,6 +22,9 @@ function getBuildPlugin(config={}){
         }
     }
     const plugin = load();
+    if(typeof plugin ==='object' && plugin.default){
+        plugin = plugin.default;
+    }
     return plugin(config.options)
 }
 
