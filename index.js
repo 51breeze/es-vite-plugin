@@ -21,7 +21,7 @@ function getBuildPlugin(config={}){
             throw new Error('Plugin name invalid')
         }
     }
-    const plugin = load();
+    let plugin = load();
     if(typeof plugin ==='object' && plugin.default){
         plugin = plugin.default;
     }
