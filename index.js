@@ -1,4 +1,4 @@
-const {readFileSync, existsSync}  = require('fs');
+const {readFileSync, existsSync, statSync}  = require('fs');
 const Compiler = require("easescript/lib/core/Compiler");
 const Diagnostic = require("easescript/lib/core/Diagnostic");
 const Utils = require('easescript/lib/core/Utils');
@@ -259,7 +259,9 @@ function plugin(options={}){
                     }
                     if(!dependFile.disabled){
                         dependFile.files.forEach(file=>{
-                            this.addWatchFile( path.normalize(file) );
+                            if(existsSync(file) && statSync(file).isFile()){
+                                this.addWatchFile( path.normalize(file) );
+                            }
                         })
                     }
                 });
