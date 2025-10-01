@@ -1,6 +1,6 @@
 {
   "name": "es-vite-plugin",
-  "version": "0.4.2",
+  "version": "0.4.4",
   "description": "EaseScript Code loader for Vite",
   "main": "index.js",
   "repository": {

@@ -1,6 +1,7 @@
 const {readFileSync, existsSync}  = require('fs');
 const Compiler = require("easescript/lib/core/Compiler");
 const Diagnostic = require("easescript/lib/core/Diagnostic");
+const Utils = require('easescript/lib/core/Utils');
 const rollupPluginUtils = require('rollup-pluginutils');
 const path = require('path');
 const {compileStyle}=require("vue/compiler-sfc");
@@ -32,8 +33,9 @@ function errorHandle(context, compilation){
     if( !Array.isArray(compilation.errors) )return;
     return compilation.errors.filter( error=>{
         if(error.kind === Diagnostic.ERROR){
+            context.warn( error.toString() )
             return true;
-        }else{
+        }else if(error.kind === Diagnostic.WARN){
             context.warn( error.toString() )
             return false;
         }
@@ -96,26 +98,29 @@ function createFilter(include = [/\.(es|ease)(\.vue)?(\?|$)/i], exclude = []) {
     return id => filter(id);
 }
 
-function makePlugins(rawPlugins, options, cache, fsWatcher, getContext){
+function addHotServerDeps(compilation, context, serverSideRecords){
+    const deps = compilation.getCompilationsOfDependency();
+    deps.forEach( dep=>{
+        if(dep.file && serverSideRecords.has(dep) ){
+            context.addWatchFile( path.normalize(dep.file) );
+        }
+    });
+};
+
+function makePlugins(rawPlugins, fsWatcher, getContext){
     var plugins = null;
+    var watchedRecords = null;
     if( Array.isArray(rawPlugins) && rawPlugins.length > 0 ){
         plugins = rawPlugins.map( plugin=>getBuildPlugin(plugin) );
-        const watchedRecords = new WeakSet();
+        watchedRecords = new WeakSet();
+
         const addWatch = (compilation)=>{
             if(fsWatcher && !watchedRecords.has(compilation)){
                 watchedRecords.add(compilation)
-                fsWatcher.add(compilation.file).on('change',async (file)=>{
-                    const compilation = compiler.getCompilationByFile(file);
-                    if(compilation){
-                        build(compilation, true);
-                    }
-                });
+                fsWatcher.add(compilation.file)
             }
         }
-        const build = async (compilation, changed)=>{
-            if(!compilation || compilation.isDescriptionType){
-                return false;
-            }
+        const build = async (plugin, compilation, changed)=>{
             if(changed){
                 const code = readFileSync(compilation.file,"utf-8").toString();
                 if( !compilation.isValid(code) ){
@@ -128,41 +133,59 @@ function makePlugins(rawPlugins, options, cache, fsWatcher, getContext){
             await compilation.ready();
             let errors = errorHandle(getContext(), compilation);
             if(errors && errors.length>0){
-                console.error(errors.join("\n"));
                 return;
             }
-            plugins.forEach( async plugin=>{
-                if(compiler.isPluginInContext(plugin , compilation)){
-                    addWatch(compilation)
-                    try{
-                        if(changed){
-                            await plugin.build(compilation);
-                        }else{
-                            await plugin.run(compilation)
-                        }
-                    }catch(e){
-                        console.error(e)
-                    }
+            try{
+                addWatch(compilation)
+                if(changed){
+                    await plugin.build(compilation);
+                }else{
+                    await plugin.run(compilation)
                 }
-            });
-            return true
+            }catch(e){
+                console.error(e)
+            }
         }
-        compiler.on('onParseDone', build);
+
+        if(fsWatcher){
+            fsWatcher.on('change',async (file)=>{
+                const compilation = compiler.getCompilationByFile(file);
+                if(compilation && !compilation.isDescriptionType){
+                    plugins.forEach(plugin=>{
+                        if(compiler.isPluginInContext(plugin, compilation)){
+                            build(plugin, compilation, true)
+                        }
+                    })
+                }
+            })
+        }
+
+        compiler.on('onParseDone', (compilation)=>{
+            if(!compilation.isDescriptionType){
+                plugins.forEach(plugin=>{
+                    if(compiler.isPluginInContext(plugin, compilation)){
+                        build(plugin, compilation)
+                    }
+                })
+            }
+        });
     }
     
-    return plugins
+    return [plugins, watchedRecords]
 }
 
 function plugin(options={}){
+    var pluginContext = null;
+    var addContextDependency = null;
     const getContext = ()=>pluginContext;
     const filter = createFilter(options.include, options.exclude);
     const mainPlugin = getBuildPlugin(options.builder)
+    const rawOpts = mainPlugin.options || {};
+    const hotReload = !!rawOpts.hot;
     const cache = new Map();
     const fsWatcher = options.watch ? compiler.createWatcher() : null;
-    const plugins = makePlugins(options.plugins, options, cache, fsWatcher, getContext);
-    const rawOpts = mainPlugin.options || {};
+    const [plugins, serverSideRecords] = makePlugins(options.plugins, fsWatcher, getContext);
     const isProduction = rawOpts.mode === 'production' || process.env.NODE_ENV === 'production';
-    const hotReload = !!rawOpts.hot;
     const hotRecords = hotReload ? new Map() : null;
     if(plugins){
         hasCrossPlugin = true;
@@ -170,9 +193,11 @@ function plugin(options={}){
 
     async function getCode(resourcePath, resource=null, query={}){
         if(!resource)resource = resourcePath;
+        pluginContext = this;
         const compilation = await compiler.ready(resourcePath)
         if(compilation){
             cache.set(compilation, compilation.source);
+
             if(hasCrossPlugin && !compiler.isPluginInContext(mainPlugin , compilation) ){
                 return {
                     code:`export default null;/*Removed "${compilation.file}" file that is not in plugin scope the "${mainPlugin.name}". */`,
@@ -194,8 +219,19 @@ function plugin(options={}){
                 }
             }
 
+            errorHandle(getContext(), compilation)
+
             let buildGraph = null;
             try{
+                if(!query.type){
+                    buildGraph = mainPlugin.getBuildGraph(compilation);
+                    if(buildGraph){
+                        const dependFiles = buildGraph.getDependFiles();
+                        if(dependFiles && dependFiles.length>0){
+                            mainPlugin.clear(compilation);
+                        }
+                    }
+                }
                 if(query.id && query.type == null){
                     buildGraph = await mainPlugin.build(compilation, query.id);
                 }else{
@@ -211,16 +247,23 @@ function plugin(options={}){
                 return;
             }
 
-            compilation.errors.forEach(error=>{
-                if(error.kind === Diagnostic.ERROR){
-                    getContext().error(error.toString());
-                }else{
-                    getContext().warn(error.toString());
-                }
-            });
-            
+            const dependFiles = buildGraph.getDependFiles();
+            if(dependFiles && dependFiles.length>0){
+                dependFiles.forEach(dependFile=>{
+                    if(addContextDependency){
+                        addContextDependency(dependFile.dir, compilation.file)
+                    }
+                    if(!dependFile.disabled){
+                        dependFile.files.forEach(file=>{
+                            this.addWatchFile( path.normalize(file) );
+                        })
+                    }
+                });
+            }
+
             let content = buildGraph.code;
             let sourcemap =  buildGraph.sourcemap;
+
             if(query.type === 'style' || query.type === 'embedAssets'){
                 let asset = buildGraph.findAsset(asset=>asset.id == query.index);
                 if(!asset){
@@ -255,6 +298,8 @@ function plugin(options={}){
                     content =result.code;
                     sourcemap = result.map;
                 }
+            }else if(serverSideRecords){
+                addHotServerDeps(compilation, getContext(), serverSideRecords)
             }
 
             if(!content){
@@ -272,7 +317,6 @@ function plugin(options={}){
         }
     }
 
-    let pluginContext = null;
     const api = {
         name: 'vite:easescript',
         async handleHotUpdate(ctx) {
@@ -285,41 +329,56 @@ function plugin(options={}){
                 }
                 const code = await read();
                 if(cache.get(compilation) !== code){
-                    if(!modules.length){
-                        modules = [
-                            ...Array.from(server.moduleGraph.fileToModulesMap.get(ctx.file) || []),
-                        ];
-                    }
                     cache.set(compilation, code);
-                    const oldSection = getSections(compilation);
-                    await compilation.ready();
+                    if(!(serverSideRecords && serverSideRecords.has(compilation))){
+                        if(!modules.length){
+                            modules = [
+                                ...Array.from(server.moduleGraph.fileToModulesMap.get(ctx.file) || []),
+                            ];
+                        }
+                        await compilation.ready();
+                    }else{
+                        modules.length = 0;
+                        //服务端文件变更，找出依赖服务端的前端模块
+                        compilation.referenceCompilations.forEach( (dep)=>{
+                            if(!dep.isDescriptorDocument() && dep !== compilation){
+                                if(!serverSideRecords.has(dep) && compiler.isPluginInContext(mainPlugin, dep)){
+                                    const result = server.moduleGraph.fileToModulesMap.get(dep.file)
+                                    if(result){
+                                        result.forEach(mod=>{
+                                            if(mod.id===dep.file){
+                                                modules.push(mod)
+                                            }
+                                        })
+                                    }
+                                }
+                            }
+                        })
+                        return modules;
+                    }
+
                     if(compilation.stack){
                         const changed = new Set();
+                        const oldSection = hotRecords.get(compilation);
                         const newSection = getSections(compilation);
-                        hotRecords.set(compilation, {prev:oldSection, last:newSection});
+                        hotRecords.set(compilation, newSection);
                         modules.forEach( mod=>{
                             if(directRequestRE.test(mod.url))return;
                             if(mod.url.includes("macro=true")){
-                                if(oldSection.script !== newSection.script){
+                                if(!oldSection || oldSection.script !== newSection.script){
                                     changed.add(mod);
                                 }
                             }else if(styleRequestRE.test(mod.url)){
-                                if(oldSection.style !== newSection.style){
+                                if(!oldSection || oldSection.style !== newSection.style){
                                     changed.add(mod);
                                 }
-                            }else if(oldSection.script !== newSection.script || oldSection.jsx !== newSection.jsx){
+                            }else if(!oldSection || (oldSection.script !== newSection.script || oldSection.jsx !== newSection.jsx)){
                                 changed.add(mod);
                             }
                         });
                         return Array.from(changed.values());
                     }else{
-                        compilation.errors.forEach( error=>{
-                            if(error.kind === Diagnostic.ERROR){
-                                console.error( error.toString() )
-                            }else{
-                                console.warn( error.toString() )
-                            }
-                        });
+                        errorHandle(getContext(), compilation)
                     }
                 }
                 return [];
@@ -332,7 +391,40 @@ function plugin(options={}){
             return config;
         },
         configResolved(config){},
-        configureServer(server){},
+        configureServer(server){
+            if(hotReload){
+                const fsWatcher = compiler.createWatcher();
+                const context = {};
+                const invalidate = (_path)=>{
+                    const key = path.normalize(_path)
+                    const matched = Object.keys(context).find(k=>{
+                        return key.startsWith(k)
+                    })
+                    const files = context[matched];
+                    if(Array.isArray(files)){
+                        const modules = files.map(file=>{
+                            const result = server.moduleGraph.fileToModulesMap.get(file);
+                            if(result){
+                                return Array.from(result.values());
+                            }
+                            return []
+                        }).flat()
+                        server.ws.send('vite:fileAdd', {path:Utils.normalizePath(_path)});
+                        modules.forEach(mod=>{
+                            server.moduleGraph.invalidateModule(mod);
+                        })
+                    }
+                }
+                fsWatcher.on('unlink', invalidate)
+                fsWatcher.on('add', invalidate)
+                addContextDependency = (contextDir, file)=>{
+                    const key = path.normalize(contextDir)
+                    const items = context[key] || (context[key]=[])
+                    items.push(file)
+                    fsWatcher.add(contextDir)
+                }
+            }
+        },
         buildStart(){
             pluginContext = this;
         },
@@ -406,4 +498,4 @@ function plugin(options={}){
     return api;
 }
 
-export default plugin;
+module.exports = plugin
