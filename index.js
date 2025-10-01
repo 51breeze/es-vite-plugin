@@ -43,6 +43,10 @@ function errorHandle(context, compilation){
 }
 
 function parseResource(id) {
+    id = decodeURIComponent(String(id));
+    if(id.startsWith('virtual:nuxt:')){
+        id = id.substring(13)  
+    }
     let [resourcePath, rawQuery] = id.split(`?`, 2);
     const query = Object.fromEntries(new URLSearchParams(rawQuery));
     if (query.vue != null) {
