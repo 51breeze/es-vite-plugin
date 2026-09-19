@@ -5,7 +5,7 @@ const Utils = require('easescript/lib/core/Utils');
 const rollupPluginUtils = require('rollup-pluginutils');
 const path = require('path');
 const {compileStyle}=require("vue/compiler-sfc");
-const compiler = Compiler.compiler();
+const compiler = new Compiler();
 const allowPreprocessLangs =['less', 'sass','scss','styl','stylus'];
 const directRequestRE = /(?:\?|&)direct\b/;
 const styleRequestRE = /(?:\?|&)type=style\b/;
